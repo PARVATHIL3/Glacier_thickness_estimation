@@ -1,0 +1,340 @@
+########################## flowlines and boundary #####################################
+import arcpy
+import os
+
+# Set up workspace and parameters
+arcpy.env.workspace = r"F:\demo\higthim_input"
+arcpy.env.overwriteOutput = True
+print("Modifying Flowlines and Boundary Script is running...")
+
+# Glacier shapefile and output folders
+glacier_shapefile = r"F:\demo\higthim_input\rgi_boundaries.shp"
+boundaries_output_folder = os.path.join(r"F:\demo\higthim_input", "boundary_automated_results")
+flowlines_output_folder = os.path.join(r"F:\demo\higthim_input", "flowline_automated_results")
+
+# Create output folders if they don't exist
+if not os.path.exists(boundaries_output_folder):
+    os.makedirs(boundaries_output_folder)
+
+if not os.path.exists(flowlines_output_folder):
+    os.makedirs(flowlines_output_folder)
+
+# Loop through each glacier
+fields = ["SHAPE@", "FID"]  # Adjust fields as per your shapefile
+
+with arcpy.da.SearchCursor(glacier_shapefile, fields) as cursor:
+    for row in cursor:
+        glacier_geometry = row[0]
+        glacier_id = row[1]
+
+        print("Processing Glacier ID: %s" % glacier_id)
+
+        # Create a temporary feature class for the current glacier boundary
+        temp_glacier_boundary = os.path.join(arcpy.env.scratchGDB, "temp_glacier_%s" % glacier_id)
+        arcpy.CopyFeatures_management(glacier_geometry, temp_glacier_boundary)
+
+        print("Created temporary boundary for Glacier ID: %s" % glacier_id)
+
+        # Save the glacier boundary
+        output_boundary = os.path.join(boundaries_output_folder, "boundary_%s.shp" % glacier_id)
+        arcpy.CopyFeatures_management(temp_glacier_boundary, output_boundary)
+
+        print("Saved boundary for Glacier ID: %s" % glacier_id)
+
+        # Clip global flowlines using the glacier boundary
+        flowlines_input = r"F:\demo\higthim_input\flowlines.shp"  # Replace with actual path
+        output_flowlines = os.path.join(flowlines_output_folder, "flowlines_%s.shp" % glacier_id)
+        arcpy.Clip_analysis(flowlines_input, temp_glacier_boundary, output_flowlines)
+
+        print("Saved clipped flowlines for Glacier ID: %s" % glacier_id)
+
+        # Use the Extend Line tool directly on the clipped flowlines
+        arcpy.ExtendLine_edit(output_flowlines)
+
+        print("Extended flowlines for Glacier ID: %s" % glacier_id)
+
+        # Calculate the length of each flowline and delete ones below the threshold
+        with arcpy.da.UpdateCursor(output_flowlines, ["SHAPE@", "SHAPE@LENGTH"]) as update_cursor:
+            for update_row in update_cursor:
+                length = update_row[0].length
+                if length < 0.1:
+                    update_cursor.deleteRow()
+
+        print("Deleted flowlines below the threshold for Glacier ID: %s" % glacier_id)
+
+        # Clip the extended lines
+        output_extended_lines = os.path.join(flowlines_output_folder, "flowline_%s.shp" % glacier_id)
+        arcpy.Clip_analysis(output_flowlines, temp_glacier_boundary, output_extended_lines)
+
+        print("Saved clipped extended flowlines for Glacier ID: %s" % glacier_id)
+
+        # Clean up temporary files
+        arcpy.Delete_management(temp_glacier_boundary)
+        arcpy.Delete_management(output_flowlines)
+
+print("Modifying Flowlines and Boundary script ran successfully")
+
+##################################  DEM ###################################
+import arcpy
+from arcpy.sa import *
+import os
+
+print("DEM Script is running...")
+
+# Set up workspace and parameters
+arcpy.env.workspace = r"F:\demo\higthim_input"
+arcpy.env.overwriteOutput = True
+
+# DEM tiles folder
+dem_tiles_folder = os.path.join(arcpy.env.workspace, "dem_tiles")
+
+# Check if the folder exists
+if not os.path.exists(dem_tiles_folder):
+    print("Error: The 'dem_tiles' folder does not exist.")
+    exit()
+
+# Function to check and reproject DEM tiles
+def check_and_reproject_dem(dem_file):
+    spatial_ref = arcpy.Describe(dem_file).spatialReference
+    if spatial_ref.factoryCode != 32643:
+        print("Reprojecting %s to WGS 1984 UTM Zone 43N..." % dem_file)
+        reprojected_dem_file = os.path.join(arcpy.env.scratchGDB, os.path.basename(dem_file) + "_reprojected")
+        arcpy.ProjectRaster_management(dem_file, reprojected_dem_file, arcpy.SpatialReference(32643))
+        return reprojected_dem_file
+    else:
+        return dem_file
+
+# List all TIFF files in the dem_tiles folder
+tif_files = [os.path.join(dem_tiles_folder, file) for file in os.listdir(dem_tiles_folder) if file.endswith(".tif")]
+
+# Check if there are any TIFF files in the folder
+if not tif_files:
+    print("Error: No TIFF files found in the 'dem_tiles' folder.")
+    exit()
+
+# Check and reproject DEM tiles if necessary
+tif_files_checked = []
+for file in tif_files:
+    checked_file = check_and_reproject_dem(file)
+    tif_files_checked.append(checked_file)
+
+# Mosaic the DEM tiles
+mosaic_dem = os.path.join(arcpy.env.workspace, "dem.tif")
+arcpy.MosaicToNewRaster_management(
+    tif_files_checked,
+    arcpy.env.workspace,
+    "dem.tif",
+    pixel_type="32_BIT_FLOAT",
+    number_of_bands=1
+)
+
+# Glacier shapefile and output folders
+glacier_shapefile = os.path.join(arcpy.env.workspace, "rgi_boundaries.shp")
+boundaries_output_folder = os.path.join(arcpy.env.workspace, "boundary_automated_results")
+dem_output_folder = os.path.join(arcpy.env.workspace, "dem_automated_results")
+
+# Create output folders if they don't exist
+if not os.path.exists(boundaries_output_folder):
+    os.makedirs(boundaries_output_folder)
+
+if not os.path.exists(dem_output_folder):
+    os.makedirs(dem_output_folder)
+
+# Loop through each glacier
+fields = ["SHAPE@", "FID"]
+
+with arcpy.da.SearchCursor(glacier_shapefile, fields) as cursor:
+    for row in cursor:
+        glacier_geometry = row[0]
+        glacier_id = row[1]
+
+        print("Processing Glacier ID: %s" % glacier_id)
+
+        # Temporary glacier boundary
+        temp_glacier_boundary = os.path.join(arcpy.env.scratchGDB, "temp_glacier_%s" % glacier_id)
+        arcpy.CopyFeatures_management(glacier_geometry, temp_glacier_boundary)
+        print("Created temporary boundary for Glacier ID: %s" % glacier_id)
+
+        # Create buffer around the boundary
+        buffer_distance = "50"  # in meters
+        buffered_boundary = os.path.join(arcpy.env.scratchGDB, "buffered_glacier_%s" % glacier_id)
+        arcpy.Buffer_analysis(temp_glacier_boundary, buffered_boundary, buffer_distance)
+        print("Created buffered boundary for Glacier ID: %s" % glacier_id)
+
+        # Save buffered boundary
+        buffered_boundary_output = os.path.join(boundaries_output_folder, "buffered_glacier_%s.shp" % glacier_id)
+        arcpy.CopyFeatures_management(buffered_boundary, buffered_boundary_output)
+        print("Saved buffered boundary for Glacier ID: %s" % glacier_id)
+
+        # Clip DEM to buffered extent
+        output_dem_clipped = os.path.join(dem_output_folder, "dem_%s.tif" % glacier_id)
+        clipped_raster = ExtractByMask(mosaic_dem, buffered_boundary)
+        clipped_raster.save(output_dem_clipped)
+        print("Saved DEM clipped to buffered boundary for Glacier ID: %s" % glacier_id)
+
+        # Clean up temporary files
+        arcpy.Delete_management(temp_glacier_boundary)
+        arcpy.Delete_management(buffered_boundary)
+
+print("DEM Script ran successfully")
+
+########################## contour ###################################
+
+import arcpy
+from arcpy.sa import *
+import os
+
+print("Contour Script is running...")
+
+# Set up workspace and parameters
+arcpy.env.workspace = r"F:\demo\higthim_input"
+arcpy.env.overwriteOutput = True
+contour_interval = 100
+
+# DEM file path
+dem_path = r"F:\demo\higthim_input\dem.tif"
+
+# Glacier shapefile and output folder
+glacier_shapefile = r"F:\demo\higthim_input\rgi_boundaries.shp"
+output_folder = r"F:\demo\higthim_input\contour_automated_results"
+
+# Function to check and reproject glacier shapefile
+def check_and_reproject_glacier_shapefile(shapefile):
+    spatial_ref = arcpy.Describe(shapefile).spatialReference
+    if spatial_ref.factoryCode != 32643:  # Check if not projected to WGS 1984 UTM Zone 43N
+        print("Reprojecting %s to WGS 1984 UTM Zone 43N..." % shapefile)
+        reprojected_shapefile = os.path.join(arcpy.env.scratchGDB, os.path.basename(shapefile) + "_reprojected")
+        arcpy.Project_management(shapefile, reprojected_shapefile, arcpy.SpatialReference(32643))
+        return reprojected_shapefile
+    else:
+        return shapefile
+
+# Check and reproject glacier shapefile if necessary
+glacier_shapefile = check_and_reproject_glacier_shapefile(glacier_shapefile)
+
+# Create output folder if it doesn't exist
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
+
+# Loop through each glacier
+fields = ["SHAPE@", "FID"]
+
+with arcpy.da.SearchCursor(glacier_shapefile, fields) as cursor:
+    for row in cursor:
+        glacier_geometry = row[0]
+        glacier_id = row[1]
+
+        print("Processing Glacier ID: %s" % glacier_id)
+
+        # Create a temporary feature class for the current glacier boundary
+        temp_glacier_boundary = os.path.join(arcpy.env.scratchGDB, "temp_glacier_%s" % glacier_id)
+        arcpy.CopyFeatures_management(glacier_geometry, temp_glacier_boundary)
+
+        print("Created temporary boundary for Glacier ID: %s" % glacier_id)
+
+        # Extract DEM for the current glacier using the boundary
+        output_dem = os.path.join(arcpy.env.scratchGDB, "dem_extract_%s" % glacier_id)
+        clipped_dem = ExtractByMask(dem_path, temp_glacier_boundary)
+        clipped_dem.save(output_dem)
+
+        print("Extracted DEM for Glacier ID: %s" % glacier_id)
+
+        # Get min and max elevation values
+        min_val = int(arcpy.GetRasterProperties_management(output_dem, "MINIMUM").getOutput(0))
+        max_val = int(arcpy.GetRasterProperties_management(output_dem, "MAXIMUM").getOutput(0))
+
+        # Generate reclass ranges
+        reclass_ranges = []
+        i = min_val
+        while i < max_val:
+            reclass_ranges.append([i, i + contour_interval, i])
+            i += contour_interval
+
+        # Reclassify
+        reclass_map = RemapRange(reclass_ranges)
+        reclass_dem = Reclassify(output_dem, "Value", reclass_map)
+
+        # Convert reclassified raster to polygon
+        contour_polygons = os.path.join(output_folder, "contour_%s.shp" % glacier_id)
+        arcpy.RasterToPolygon_conversion(reclass_dem, contour_polygons, "NO_SIMPLIFY")
+
+        print("Generated contour polygons for Glacier ID: %s" % glacier_id)
+
+print("Contour Script ran successfully")
+
+
+
+############################ velocity #########################
+
+import arcpy
+from arcpy.sa import *
+import os
+
+print("Velocity Script is running...")
+
+# Set up workspace and parameters
+arcpy.env.workspace = r"F:\demo\higthim_input"
+arcpy.env.overwriteOutput = True
+
+# Velocity file path
+velocity_path = r"F:\demo\higthim_input\velocity.tif"
+
+# Glacier shapefile and output folder for velocity
+glacier_shapefile = r"F:\demo\higthim_input\rgi_boundaries.shp"
+output_folder_velocity = r"F:\demo\higthim_input\velocity_automated_results"
+
+# Function to check and reproject velocity raster
+def check_and_reproject_velocity(velocity_file):
+    spatial_ref = arcpy.Describe(velocity_file).spatialReference
+    if spatial_ref.factoryCode != 32643:
+        print("Reprojecting {0} to WGS 1984 UTM Zone 43N...".format(velocity_file))
+        
+        # Check if spatial reference is defined
+        if spatial_ref.name == "Unknown":
+            print("ERROR: Input raster has no defined spatial reference.")
+            raise Exception("Define projection using arcpy.DefineProjection_management before proceeding.")
+        
+        out_path = os.path.join(arcpy.env.workspace, "velocity_reprojected.tif")
+        arcpy.ProjectRaster_management(
+            velocity_file,
+            out_path,
+            arcpy.SpatialReference(32643)
+        )
+        return out_path
+    else:
+        return velocity_file
+
+# Check and reproject velocity raster
+velocity_path = check_and_reproject_velocity(velocity_path)
+
+# Create output folder if it doesn't exist
+if not os.path.exists(output_folder_velocity):
+    os.makedirs(output_folder_velocity)
+
+# Loop through each glacier
+fields = ["SHAPE@", "FID"]
+
+with arcpy.da.SearchCursor(glacier_shapefile, fields) as cursor:
+    for row in cursor:
+        glacier_geometry = row[0]
+        glacier_id = row[1]
+
+        print("Processing Glacier ID: {0}".format(glacier_id))
+
+        # Create a temporary feature class for glacier boundary
+        temp_glacier_boundary = os.path.join(arcpy.env.workspace, "temp_glacier_{0}.shp".format(glacier_id))
+        arcpy.CopyFeatures_management(glacier_geometry, temp_glacier_boundary)
+
+        print("Created temporary boundary for Glacier ID: {0}".format(glacier_id))
+
+        # Extract velocity raster by mask
+        output_velocity = os.path.join(output_folder_velocity, "velocity_{0}.tif".format(glacier_id))
+        extracted = ExtractByMask(velocity_path, temp_glacier_boundary)
+        extracted.save(output_velocity)
+
+        print("Extracted velocity for Glacier ID: {0}".format(glacier_id))
+
+        # Optional: delete temporary shapefile
+        arcpy.Delete_management(temp_glacier_boundary)
+
+print("Velocity Script ran successfully")

@@ -1,0 +1,506 @@
+###########################################################workspace organise#########################################
+import os
+import shutil
+
+source_folders = [
+    "F:\demo\higthim_input\\boundary_automated_results",
+    "F:\demo\higthim_input\\contour_automated_results",
+    "F:\demo\higthim_input\\dem_automated_results",
+    "F:\demo\higthim_input\\flowline_automated_results",
+    "F:\demo\higthim_input\\velocity_automated_results"
+]
+
+destination_folder = "F:\demo\workspaces"
+
+# Determine the number of shapefiles in the "boundary_automated_results" folder
+boundary_folder = source_folders[0]
+boundary_files = [file for file in os.listdir(boundary_folder) if file.endswith(".shp")]
+num_shapefiles = len(boundary_files)
+
+# Create workspace folders if they don't exist
+for i in range(num_shapefiles):
+    workspace_folder = os.path.join(destination_folder, "workspace_" + str(i))
+    
+    # Create subfolders for different categories
+    categories = ["glacier_boundary", "contour_polygon", "DEM", "flowline", "velocity_raster"]
+    for category in categories:
+        category_folder = os.path.join(workspace_folder, category)
+        if not os.path.exists(category_folder):
+            os.makedirs(category_folder)
+
+# Copy files to the respective category folders inside workspace
+for source_folder in source_folders:
+    files = os.listdir(source_folder)
+    
+    for file in files:
+        index_start = file.rfind("_") + 1
+        index_end = file.find(".", index_start)
+        
+        if index_start > 0 and index_end > 0:
+            file_index_str = file[index_start:index_end]
+            
+            try:
+                file_index = int(file_index_str)
+                
+                if 0 <= file_index < num_shapefiles:
+                    source_path = os.path.join(source_folder, file)
+                    
+                    # Check file name for specific strings and organize accordingly
+                    if "boundary" in file.lower():
+                        category_folder = os.path.join(destination_folder, "workspace_" + str(file_index), "glacier_boundary")
+                    elif "contour" in file.lower():
+                        category_folder = os.path.join(destination_folder, "workspace_" + str(file_index), "contour_polygon")
+                    elif "dem" in file.lower():
+                        category_folder = os.path.join(destination_folder, "workspace_" + str(file_index), "DEM")
+                    elif "flowline" in file.lower():
+                        category_folder = os.path.join(destination_folder, "workspace_" + str(file_index), "flowline")
+                    elif "velocity" in file.lower():
+                        category_folder = os.path.join(destination_folder, "workspace_" + str(file_index), "velocity_raster")
+                    else:
+                        # Default to the workspace folder if no specific category is found
+                        category_folder = os.path.join(destination_folder, "workspace_" + str(file_index))
+                    
+                    # Create category folder if it doesn't exist
+                    if not os.path.exists(category_folder):
+                        os.makedirs(category_folder)
+                    
+                    # Remove underscore and the following number from the file name
+                    destination_file_name = file[:index_start - 1] + file[index_end:]
+                    destination_path = os.path.join(category_folder, destination_file_name)
+                    
+                    shutil.copy2(source_path, destination_path)
+            except ValueError:
+                pass  # Ignore files that don't have a valid numeric index
+print("Workspace created for all glaciers")
+
+
+
+
+
+
+######################################################higthim automated####################################################################
+import os
+import arcpy
+import math
+from arcpy import env
+import arcpy.sa
+from arcpy.sa import *
+import shutil
+import time
+debug_val = 1
+
+folder_path = r"F:\demo\workspaces"
+
+# Get a list of all subdirectories (workspaces) in the specified folder
+workspace_list = [os.path.join(folder_path, workspace) for workspace in os.listdir(folder_path) if os.path.isdir(os.path.join(folder_path, workspace))]
+# Define a function to extract the numeric part of the workspace name
+def extract_number(workspace_name):
+    return int(workspace_name.split('_')[-1])
+
+# Sort the workspace list based on the numeric part of the workspace name
+workspace_list.sort(key=extract_number)
+for workspace in workspace_list:
+    # Assign variable names to input parameters
+    def_list = [
+        workspace,
+        "flowline",
+        os.path.join(workspace, "contour_polygon", "contour.shp"),
+        os.path.join(workspace, "velocity_raster", "velocity.tif"),
+        os.path.join(workspace, "glacier_boundary", "boundary.shp"),
+        os.path.join(workspace, "DEM", "dem.tif")
+    ]
+
+    i1, i2, i3, i4, i5, i6 = def_list
+
+    workspace, flowlineDataset, contourFile, velocityRaster, boundary, demRaster = i1, i2, i3, i4, i5, i6
+
+    if debug_val == 1:
+        print("Workspace folder = ", workspace)
+        print("Flow line folder = ", flowlineDataset)
+        print("Contour File = ", contourFile)
+        print("Velocity Raster File = ", velocityRaster)
+        print("Boundary Shape File = ", boundary)
+        print("Dem Raster File = ", demRaster)
+
+    if debug_val == 1:
+        print("Printed the input files and folders Successfully!")
+
+    # Set working environment
+    arcpy.env.workspace = workspace
+    
+    
+    #Make required folders in the current working environment
+    
+    os.makedirs(os.path.join(workspace, "contour_split"))
+    os.makedirs(os.path.join(workspace, "flowline_clip"))
+    os.makedirs(os.path.join(workspace, "vel_ras_clip"))
+    os.makedirs(os.path.join(workspace, "thickness_ras_clip"))
+    os.makedirs(os.path.join(workspace, "mosaic_ras"))
+    os.makedirs(os.path.join(workspace, "flowline_ras"))
+    os.makedirs(os.path.join(workspace, "vector_file"))
+    os.makedirs(os.path.join(workspace, "boundary_file"))
+    os.makedirs(os.path.join(workspace, "thickness_dis"))
+    # Set the scratch workspace
+    
+    
+    if(debug_val == 1):
+        print "Created Folders and paths for outputs!"
+        
+    # Add split field
+    outputField = arcpy.ValidateFieldName("Split_ID")
+    arcpy.AddField_management(contourFile, outputField, "TEXT")
+    arcpy.CalculateField_management(contourFile, outputField, "!FID!", "PYTHON_9.3")
+    
+    # Perform split analysis on input glacier contour file
+    arcpy.Split_analysis(
+        in_features=contourFile,
+        split_features=contourFile,
+        split_field="Split_ID",
+        out_workspace=os.path.join(workspace, "contour_split")
+    )
+    
+    #Define input and clip feature classes 
+    flowlineList = arcpy.ListFeatureClasses(feature_dataset = flowlineDataset)
+    #print "flowlinelist: " + flowlineList  
+    contourSplitList = arcpy.ListFeatureClasses(feature_dataset = 'contour_split')
+    #print "contourSplitList = " + contourSplitList
+    
+    
+    #Run a loop on each flowline
+    #Run a loop on each shapefile
+    #Create clip name for the indexed flowline and shapefile
+    #Create clip folder name for indexed flowline
+    #Clip analysis
+    #Note that required folder path needs to exist before running the code
+    
+    if(debug_val == 1):
+        print "About to start flowline loop!"
+    
+    # Configure a loop on each flowline
+    for flowline in flowlineList:
+        i = flowlineList.index(flowline)
+        flowline = os.path.join(workspace, flowlineDataset, flowline)
+        outputClipFolder = os.path.join(workspace, "flowline_clip", "flowline{0}".format(str(i).zfill(2)))
+    
+        os.makedirs(outputClipFolder)
+    
+        for contour in contourSplitList:
+            j = contourSplitList.index(contour)
+            contour = os.path.join(workspace, "contour_split", contour)
+            outputClipName = "Clip{0}.shp".format(str(j).zfill(3))
+    
+    
+            arcpy.Clip_analysis(
+                in_features=flowline,
+                clip_features=contour,
+                out_feature_class=os.path.join(outputClipFolder, outputClipName)
+            )
+    
+    if(debug_val == 1):
+       print "Flowline loop finished!"
+        
+    #Set working environment
+    arcpy.env.workspace = workspace + "/" + "flowline_clip"
+    
+    #Define sub working spaces
+    clipFolderList = arcpy.ListWorkspaces()
+    
+    #Define an empty matrix
+    matrix = []
+    
+    if(debug_val == 1):
+       print "Constant Matrix Calculations Started!"
+       
+    for folder in clipFolderList:
+        k = clipFolderList.index(folder)
+        folder = os.path.normpath(folder)
+        
+        arcpy.env.workspace = folder
+        clipList = arcpy.ListFeatureClasses()
+        
+        field = ['SHAPE@LENGTH']
+    
+        #Define constants
+        iceDensity = 900 
+        scaleFactor = 0.8 #ratio between the driving stress and basal stress along a glacier
+        g = 9.8
+        creepParameter = 3.24 * math.pow(10, -24)
+        
+        #Append matrix outside the nested loop
+        #matrix.append([])
+        list=[]
+        for clip in clipList:
+            result = arcpy.GetCount_management(clip)
+            count = int(result.getOutput(0))
+    
+            if count != 0:
+                with arcpy.da.SearchCursor(clip, field) as cursor:
+                    for row in cursor:
+                        length = row[0]
+                        slope = 100/length #for DEM elevation contours at 100 m interval
+                        a = math.atan(slope) #a is the slope angle
+                        sina = math.sin(a)
+                        constant = 1.5/(creepParameter * math.pow(scaleFactor, 3) * math.pow((iceDensity*g*sina), 3))         
+                        
+            else:
+                constant = 0
+                                   
+            list.append(constant)
+                    #matrix[k].append(constant)   
+            
+        matrix.append(list)
+    
+    print "Constant matrix = ", matrix
+    
+    #Check out extension to retreive Spatial Analyst module
+    arcpy.CheckOutExtension('Spatial')
+    
+    #Set working environment for analysis masks
+    arcpy.env.workspace = workspace
+    
+    #Set scratch working space
+    env.scratchWorkspace = workspace
+    
+    #Define velocity raster
+    velocityRaster = arcpy.Raster(velocityRaster)
+    
+    #List masks: shapefile feature classes
+    contourSplitList = arcpy.ListFeatureClasses(feature_dataset = "contour_split")
+    
+    #Run a while loop over length of matrix
+    #Define folder name
+    #Make a subfolderfor every flowline
+    
+    if(debug_val == 1):
+       print "Calculating Contour Split List"
+    
+    m = 0
+    while(m < len(matrix)):
+        thicknessClipFolder = workspace + "/thickness_ras_clip/" + "flowline_" + str(m).zfill(2)
+        os.makedirs(thicknessClipFolder)
+        m+=1
+    
+    
+    #Configure a loop for each mask in shapeFileList
+    #Define an environment mask
+    #Clip the raster with respect to the mask
+    #Save the clip file in output folder
+    arcpy.env.workspace = os.path.join(workspace, "contour_split")
+   
+    for contour in contourSplitList:
+        j = contourSplitList.index(contour)
+        env.mask = workspace + "/contour_split/" + contour
+        velocityClipName = "vel_clip_" + str(j).zfill(3) + ".tif"
+        velocityClip = ApplyEnvironment(velocityRaster)
+        velocityClip.save(workspace + "/vel_ras_clip/" + velocityClipName)
+    
+        m = 0
+        while m < len(matrix):
+            thicknessFolderName = workspace + "/thickness_ras_clip/" + "flowline_" + str(m).zfill(2)
+            thicknessClipName = "Clip" + str(j).zfill(3) + ".tif"
+            thicknessClip = ((matrix[m][j] * velocityClip) / 31536000) ** 0.25
+            thicknessClip.save(thicknessFolderName + "/" + thicknessClipName)
+            #time.sleep(5)
+    
+            # Explicitly release ArcPy objects
+            del velocityClip
+            del thicknessClip
+    
+            # Clear environment settings
+            arcpy.ClearEnvironment("mask")
+    
+            # List and delete rasters in the workspace
+            ScratchList = arcpy.ListRasters()
+            for scratch in ScratchList:
+                arcpy.Delete_management(scratch)
+            m += 1
+                    
+    #Check in extension
+    arcpy.CheckInExtension('Spatial')
+        
+    #Check out extension
+    arcpy.CheckOutExtension('Spatial')
+    
+    #Set working environment
+    arcpy.env.workspace = workspace + "/thickness_ras_clip"
+    
+    #List working spaces inside the working environment
+    thicknessFolderList = arcpy.ListWorkspaces()
+    
+    #Define velocity raster pixel type
+    pixelList1 = ["U1","U2","U4","U8","S8","U16","S16","U32","S32","F32","F64"]
+    pixelList2 = ["1_BIT","2_BIT","4_BIT","8_BIT_UNSIGNED","8_BIT_SIGNED","16_BIT_UNSIGNED","16_BIT_SIGNED","32_BIT_UNSIGNED","32_BIT_SIGNED","32_BIT_FLOAT","64_BIT"]
+    
+    desc = arcpy.Describe(velocityRaster)
+    pixelType = desc.pixelType
+    index = pixelList1.index(pixelType)
+    pixelType = pixelList2[index]
+    
+    
+    #Configure a loop on every workspace or subfolder for each flowline
+    #Define the index of current subfolder
+    #Clean the path of the workspace with normpath
+    #Set the workspace as the working environment for ListRasters to function
+    #List thickness raster clips inside the subfolder
+    #Create a new subfolder in mosaic file for mosaic raster for working current flowline
+    #Mosaic thickness raster clips to new raster
+    #Define current flowline shapefile as the environment mask
+    #Extract by mask the current flowline raster from the current mosaic raster
+    #Save the flowline raster in flowline raster folder
+    
+    if(debug_val == 1):
+       print "Running the thickness folder list loop!"
+    
+    for folder in thicknessFolderList:
+        i = thicknessFolderList.index(folder)
+        folder = os.path.normpath(folder)
+        arcpy.env.workspace = folder
+        thicknessClipList = arcpy.ListRasters()
+        mosaicFileName = "mosaic_" + str(i).zfill(2) + ".tif"
+        mosaicFile = arcpy.MosaicToNewRaster_management(thicknessClipList, workspace + "/mosaic_ras", mosaicFileName, pixel_type = pixelType, number_of_bands = 1, mosaic_method = "MAXIMUM")
+        arcpy.env.workspace = workspace
+        env.scratchWorkspace = workspace
+        flowlineList = arcpy.ListFeatureClasses(feature_dataset = flowlineDataset)
+        env.mask = workspace + "/" + flowlineDataset + "/" + flowlineList[i]
+        flowlineRaster = ApplyEnvironment(mosaicFile)
+        flowlineRasterName = "flowline_ras_" + str(i).zfill(2) + ".tif"
+        flowlineRaster.save(workspace + "/flowline_ras/" + flowlineRasterName)
+    
+    
+    
+    #Check in extension
+    arcpy.CheckInExtension('Spatial')    
+    
+    #Set working environment
+    arcpy.env.workspace = workspace + "/flowline_ras"
+    
+    #List every flowline raster
+    flowlineRasterList = arcpy.ListRasters()
+    
+    #Configure a loop on every raster
+    #Name flowline vector
+    #Convert raster to point
+    
+    if(debug_val == 1):
+       print "Working on Flow line Raster List Loop!"
+    
+    for raster in flowlineRasterList:
+        i = flowlineRasterList.index(raster)
+        flowlineVectorName = "flowline_vec_" + str(i).zfill(2)
+        arcpy.RasterToPoint_conversion(raster, workspace + "/vector_file/" + flowlineVectorName)
+    
+      
+    #Check out extension
+    arcpy.CheckOutExtension('Spatial')
+    
+    #Set working environment
+    arcpy.env.workspace = workspace
+    
+    #Convert polygon to line
+    glacierLine = arcpy.PolygonToLine_management(boundary, workspace + "/boundary_file/boundary_line.shp")
+    
+    #Set working environment for analysis mask
+    env.scratchWorkspace = workspace
+    
+    #Define analysis mask
+    env.mask = workspace + "/boundary_file/boundary_line.shp"
+    
+    #Define input raster
+    inputRaster = demRaster
+    
+    #Extract by mask glacier line raster from dem raster
+    tempRaster = ApplyEnvironment(demRaster)
+    
+    #Assign 0 z-values to glacier line raster
+    boundaryLineRaster = tempRaster * 0 
+    
+    #Save glacier line raster
+    boundaryLineRaster.save(workspace + "/boundary_file/boundary_line_ras.tif")
+    
+    #Raster to point conversion
+    arcpy.RasterToPoint_conversion(workspace + "/boundary_file/boundary_line_ras.tif", workspace + "/vector_file/boundary_line_vec.shp")
+    
+    #Check in extension
+    arcpy.CheckInExtension('Spatial')
+    
+    #Check out extension
+    arcpy.CheckOutExtension('Spatial')
+    
+    #Set working environment
+    env.workspace = workspace + "/vector_file"
+    
+    #List input feature classes
+    vectorList = arcpy.ListFeatureClasses()
+    
+    #Configure a loop on each feature class
+    #Create the search cursor as cursor and set field as grid code
+    #Configure a loop for each record or row in the table
+    #Delete the entire record with the conditional statement
+    for vector in vectorList:
+        if vector != "boundary_line_vec.shp":
+            with arcpy.da.UpdateCursor(vector, ["GRID_CODE"]) as cursor:
+                for row in cursor:
+            
+                    if row[0] == 1 or row[0] == 0:
+                        cursor.deleteRow()
+                  
+                    
+                    
+    #Define an empty list for TopoPointElevation             
+    #Configure a loop on each feature vector
+    #Use append tore each feature class and their respective fields in an array
+    
+    inFeaturesFieldArray = []
+    for vector in vectorList:
+        inFeaturesField = [vector, 'GRID_CODE']
+        inFeaturesFieldArray.append(inFeaturesField)
+        print inFeaturesFieldArray
+    
+    if(debug_val == 1):
+       print "Major Calculations done!!"
+    
+    #Store inPointElevations in the desired syntax
+    inPointElevations = TopoPointElevation(inFeaturesFieldArray)
+    inFeatures = ([inPointElevations])
+    
+    #Check out ArcGIS Spatial Analyst extension license
+    arcpy.CheckOutExtension("Spatial")
+    
+    #Topo to raster interpolation
+    OutTTR = TopoToRaster(inFeatures, cell_size = 30, minimum_z_value = 0)
+    
+    #Save output Raster
+    # Specify the full path for the output raster, including the name
+    output_raster_path = os.path.join(workspace, "thickness_dis", "thickness_dis.tif")
+
+	# Save output Raster
+    OutTTR.save(output_raster_path)
+    
+    #Check in extension
+    arcpy.CheckInExtension('Spatial')
+    
+    #Check out extension
+    arcpy.CheckOutExtension('Spatial')
+    
+    #Define environment mask
+    env.mask = boundary
+    
+    #Define input raster
+    inputDistributionRaster = arcpy.Raster(workspace + "/thickness_dis/thickness_dis.tif")
+    
+    #Apply environment mask to the input raster
+    finalRaster = ApplyEnvironment(inputDistributionRaster)
+    
+    #Save final distribution raster
+    finalRaster.save(workspace + "/thickness_dis/final_thickness_dis.tif")
+    
+    #Check in extension 
+    arcpy.CheckInExtension('Spatial')
+    
+    if(debug_val == 1):
+       print "All calculations done!"
+
+
+    if debug_val == 1:
+        print("Higthim for workspace {} successfully finished! Exiting!".format(workspace_list.index(workspace)))
+

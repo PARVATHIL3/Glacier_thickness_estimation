@@ -1,0 +1,88 @@
+###############################TO GET SUM #################################
+import os
+import arcpy
+import numpy as np
+
+def calculate_raster_statistics(raster_path):
+    # Read raster as numpy array
+    raster_array = arcpy.RasterToNumPyArray(raster_path, nodata_to_value=np.nan)
+    # Calculate statistics
+    stats = {
+        'Sum': np.nansum(raster_array),
+        'Maximum': np.nanmax(raster_array),
+        'Minimum': np.nanmin(raster_array),
+        'Standard Deviation': np.nanstd(raster_array)
+    }
+    return stats
+
+# Set environment settings
+workspace_directory = r"F:\demo\workspace result"  # Use raw string literal with 'r' prefix
+
+# List to store statistics for each workspace
+workspace_statistics = []
+
+# Function to calculate statistics of raster files in a workspace
+def calculate_statistics(workspace_folder, workspace_name):
+    arcpy.env.workspace = workspace_folder
+    final_thickness_files = arcpy.ListRasters("final_thickness_dis*")
+
+    if final_thickness_files:
+        workspace_stats = []
+        for raster_file in final_thickness_files:
+            raster_path = os.path.join(workspace_folder, raster_file)
+            stats = calculate_raster_statistics(raster_path)
+            workspace_stats.append(stats)
+        workspace_sum = sum(stat['Sum'] for stat in workspace_stats)
+        workspace_max = max(stat['Maximum'] for stat in workspace_stats)
+        workspace_min = min(stat['Minimum'] for stat in workspace_stats)
+        workspace_stddev = np.sqrt(sum((stat['Standard Deviation'] ** 2) for stat in workspace_stats))
+        workspace_statistics.append({
+            'Workspace Name': workspace_name,
+            'Sum': workspace_sum,
+            'Maximum': workspace_max,
+            'Minimum': workspace_min,
+            'Standard Deviation': workspace_stddev
+        })
+
+# Get sorted list of workspace folders
+sorted_workspaces = sorted(os.listdir(workspace_directory))
+
+# Iterate through each sorted workspace folder
+for workspace_folder in sorted_workspaces:
+    full_workspace_path = os.path.join(workspace_directory, workspace_folder)
+    if os.path.isdir(full_workspace_path):
+        thickness_dis_folder = os.path.join(full_workspace_path, "thickness_dis")
+        if os.path.isdir(thickness_dis_folder):
+            calculate_statistics(thickness_dis_folder, workspace_folder)
+        else:
+            print("thickness_dis folder not found in workspace:", workspace_folder)
+
+# Print the statistics in a single table
+print(f"{'Workspace Name':<25} {'Sum':<15} {'Maximum':<15} {'Minimum':<15} {'Standard Deviation':<20}")
+print('-' * 90)
+for stats in workspace_statistics:
+    print(f"{stats['Workspace Name']:<25} {stats['Sum']:<15.7f} {stats['Maximum']:<15.7f} {stats['Minimum']:<15.7f} {stats['Standard Deviation']:<20.7f}")
+
+
+
+
+########################TO SAVE AS CSV
+import csv
+
+# Define the CSV file path using raw string literal (r prefix)
+csv_file_path = r"F:\demo\workspace result\SUM.csv"
+
+# Write statistics to the CSV file
+with open(csv_file_path, 'w', newline='') as csvfile:
+    fieldnames = ['Workspace Name', 'Sum', 'Maximum', 'Minimum', 'Standard Deviation']
+    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    
+    # Write the header
+    writer.writeheader()
+    
+    # Write statistics for each workspace
+    for stats in workspace_statistics:
+        writer.writerow(stats)
+
+print("Statistics exported to", csv_file_path)
+

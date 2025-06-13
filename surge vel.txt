@@ -1,0 +1,33 @@
+
+
+
+##### for surging glaciers#####
+
+
+import arcpy
+from arcpy.sa import *
+
+# Set environment settings
+arcpy.env.workspace = r"F:\demo\higthim_surge"
+arcpy.env.overwriteOutput = True
+
+# Input velocity raster and flowline shapefile
+velocity_raster = r"F:\demo\higthim_surge\velocity.tif"
+flowline_shapefile = r"F:\surge\higthim_surge\flowlines.shp"
+
+# Output raster path
+output_raster = r"F:\demo\higthim_surge\averaged_vel_new.tif"
+
+# Set window size for moving average
+window_size = 5
+
+# Optional: Make a feature layer from the flowline shapefile
+arcpy.MakeFeatureLayer_management(flowline_shapefile, "flowline_lyr")
+
+# Perform focal statistics (moving average with 5x5 window)
+moving_average_raster = FocalStatistics(velocity_raster, NbrRectangle(window_size, window_size, "CELL"), "MEAN", "DATA")
+
+# Save the result
+moving_average_raster.save(output_raster)
+
+print("Moving average calculation complete.")
